@@ -1,0 +1,123 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Enable logs to elasticsearch
+Parameters:
+  ElasticsearchDomainName:
+    Description: Name of the Elasticsearch domain that you want to insert logs to
+    Type: String
+    Default: amitb-elastic-domain
+  CloudwatchLogGroup:
+    Description: Name of the log group you want to subscribe
+    Type: String
+    Default: /aws/eks/amitb-project/cluster
+  LambdaName:
+    Description: Name of the lambda function
+    Type: String
+    Default: amitb-cloudwatch-logs
+  LambdaRole:
+    Description: Name of the role used by the lambda function
+    Type: String
+    Default: amit-cloudwatch-logs-role
+  LambdaArtifactBucketName:
+    Description: The bucket where the lambda function located
+    Type: String
+    Default: amit-bucket
+  LambdaArtifactName:
+    Description: The name of the lambda zipped file
+    Type: String
+    Default: LogsToElasticsearch.zip
+  VPC:
+    Description: Choose which VPC the Lambda-functions should be deployed to
+    Type: 'AWS::EC2::VPC::Id'
+    Default: vpc-1111111
+  Subnets:
+    Description: Choose which subnets the Lambda-functions should be deployed to
+    Type: 'List<AWS::EC2::Subnet::Id>'
+    Default: 'subnet-123456789,subnet-123456456,subnet-123456741'
+  SecurityGroup:
+    Description: Select the Security Group to use for the Lambda-functions
+    Type: 'List<AWS::EC2::SecurityGroup::Id>'
+    Default: 'sg-2222222,sg-12345678'
+Resources:
+  ExampleInvokePermission:
+    Type: 'AWS::Lambda::Permission'
+    DependsOn: ExampleLambdaFunction
+    Properties:
+      FunctionName:
+        'Fn::GetAtt':
+          - ExampleLambdaFunction
+          - Arn
+      Action: 'lambda:InvokeFunction'
+      Principal: !Sub 'logs.${AWS::Region}.amazonaws.com'
+      SourceArn: !Sub >-
+        arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:${CloudwatchLogGroup}:*
+      SourceAccount: !Ref 'AWS::AccountId'
+  LambdaExecutionRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      RoleName: !Ref LambdaRole
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: /
+      Policies:
+        - PolicyName: lambda-to-es-via-vpc-policy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'es:*'
+                Resource:
+                  - !Sub >-
+                    arn:aws:es:${AWS::Region}:${AWS::AccountId}:domain/${ElasticsearchDomainName}
+        - PolicyName: logs-and-ec2-permissions
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'ec2:CreateNetworkInterface'
+                  - 'ec2:DescribeNetworkInterfaces'
+                  - 'ec2:DeleteNetworkInterface'
+                  - 'logs:CreateLogGroup'
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'
+                Resource: '*'
+  ExampleLambdaFunction:
+    Type: 'AWS::Lambda::Function'
+    DependsOn: LambdaExecutionRole
+    Properties:
+      Code:
+        S3Bucket: !Ref LambdaArtifactBucketName
+        S3Key: !Ref LambdaArtifactName
+      FunctionName: !Ref LambdaName
+      Handler: !Sub '${LambdaName}.handler'
+      Role:
+        'Fn::GetAtt':
+          - LambdaExecutionRole
+          - Arn
+      Runtime: nodejs10.x
+      Timeout: '300'
+      VpcConfig:
+        SecurityGroupIds: !Ref SecurityGroup
+        SubnetIds: !Ref Subnets
+      MemorySize: 512
+  SubscriptionFilter:
+    Type: 'AWS::Logs::SubscriptionFilter'
+    DependsOn: ExampleInvokePermission
+    Properties:
+      LogGroupName: !Ref CloudwatchLogGroup
+      FilterPattern: '[host, ident, authuser, date, request, status, bytes]'
+      DestinationArn:
+        'Fn::GetAtt':
+          - ExampleLambdaFunction
+          - Arn
+
